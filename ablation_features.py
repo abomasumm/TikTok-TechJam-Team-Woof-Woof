@@ -1,12 +1,17 @@
-"""把 CWM 的 13 个特征域接进来，验证「用户侧特征在 FM 里是否有用」。"""
-import csv, os, collections, statistics
+"""CWM 静态特征消融。默认只报告 validation，避免迭代期查看 held-out。"""
+import argparse, csv, os, collections, statistics
 import numpy as np
 from evaluate import evaluate
 import baseline as B
 
-import sys
-D = sys.argv[1] if len(sys.argv) > 1 else './KuaiRand-Pure/data'
-SPLITS={'train':(20220408,20220421),'valid':(20220422,20220428),'test':(20220429,20220508)}
+parser = argparse.ArgumentParser()
+parser.add_argument('--data_dir', default='./KuaiRand-Pure/data')
+parser.add_argument('--evaluate-local-heldout', action='store_true')
+args = parser.parse_args()
+D = args.data_dir
+SPLITS={'train':(20220408,20220421),'valid':(20220422,20220428)}
+if args.evaluate_local_heldout:
+    SPLITS['test']=(20220429,20220508)
 
 # CWM 的 13 个域
 USER_FE=['follow_user_num_range','register_days_range','fans_user_num_range',
@@ -25,7 +30,13 @@ rows=[]
 for f in ('log_standard_4_08_to_4_21_pure.csv','log_standard_4_22_to_5_08_pure.csv'):
     with open(f'{D}/{f}') as fh:
         for r in csv.DictReader(fh):
-            rows.append((int(r['date']), r['user_id'], r['video_id'], r['tab'],
+            date = int(r['date'])
+            # Do not even materialize held-out rows/labels in the default
+            # validation-only process.  They are read only after the caller
+            # opts in with --evaluate-local-heldout.
+            if not any(lo <= date <= hi for lo, hi in SPLITS.values()):
+                continue
+            rows.append((date, r['user_id'], r['video_id'], r['tab'],
                          float(r['duration_ms']), 1 if r['long_view']!='0' else 0))
 splits={n:[x for x in rows if lo<=x[0]<=hi] for n,(lo,hi) in SPLITS.items()}
 print({k:len(v) for k,v in splits.items()})
@@ -58,7 +69,9 @@ def build(mode):
 
 for mode,desc in [('base','5 域（当前 kit）'),('item','+4 物品侧 = 9 域'),('cwm13','CWM 全 13 域')]:
     enc,dim,nf=build(mode)
-    Xtr,ytr,_=enc['train']; Xva,yva,uva=enc['valid']; Xte,yte,ute=enc['test']
+    Xtr,ytr,_=enc['train']; Xva,yva,uva=enc['valid']
+    eval_name='test' if args.evaluate_local_heldout else 'valid'
+    Xev,yev,uev=enc[eval_name]
     scores=[]
     for seed in range(3):
         m=B.FM(dim,k=16,lr=0.001,seed=seed); rng=np.random.default_rng(seed)
@@ -72,7 +85,7 @@ for mode,desc in [('base','5 域（当前 kit）'),('item','+4 物品侧 = 9 域
                 bad+=1
                 if bad>=4: break
         m.V,m.W,m.b=state
-        scores.append(evaluate(ute,yte,m.predict(Xte)))
+        scores.append(evaluate(uev,yev,m.predict(Xev)))
     g=statistics.mean(s['GAUC'] for s in scores); n5=statistics.mean(s['nDCG@5'] for s in scores)
     pr=statistics.mean(s['primary'] for s in scores); sd=statistics.pstdev([s['primary'] for s in scores])
-    print(f"{desc:20s} ({nf:2d}域) | test GAUC {g:.4f} | nDCG@5 {n5:.4f} | primary {pr:.4f} ± {sd:.4f}")
+    print(f"{desc:20s} ({nf:2d}域) | {eval_name} GAUC {g:.4f} | nDCG@5 {n5:.4f} | primary {pr:.4f} ± {sd:.4f}")

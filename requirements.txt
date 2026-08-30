@@ -1,0 +1,2 @@
+# Runtime dependencies for the baseline and autonomous agent.
+-r agent/requirements.txt

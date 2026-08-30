@@ -1,86 +1,71 @@
-# Autonomous agent loop for KuaiRand-Pure
+# Autonomous agent internals
 
-This is the "robot" that actually decides what to try, writes the code, runs
-it, and logs the result — proof of autonomy for the challenge deliverables.
+See the root [README](../README.md) for setup and the complete testing/runbook.
 
-## What it does, one iteration at a time
+The agent has three proposal layers:
 
-1. Shows Claude the current best `pipeline.py` plus a short history of what's
-   been tried so far.
-2. Claude replies with one hypothesis + a complete new `pipeline.py`.
-3. The file is scanned for obviously dangerous code (`agent/safety.py` —
-   network calls, shelling out, deleting files, unapproved imports), then run
-   for real against the KuaiRand-Pure data with a timeout.
-4. If it crashes, the error is sent back to Claude for up to 2 fix attempts
-   before the iteration is logged as failed and the loop moves on from the
-   last good version.
-5. Every iteration — success or failure — gets one line appended to
-   `run_log.jsonl`: hypothesis, code diff, metrics, errors/recovery, tokens
-   used.
-6. Stops when the validation score stalls (hasn't improved by more than 0.002
-   over 3 iterations in a row), or after 50 iterations, or after 6 hours —
-   whichever comes first.
-7. Writes `best_pipeline.py`, `summary.json`, and a `submission.csv` (in the
-   project root, in the exact format `submit.py` expects) from whichever
-   iteration scored best on validation.
+1. `seed_pipeline.py` reproduces the immutable pointwise FM baseline.
+2. `bpr_pipeline.py` is the built-in first knowledge-guided operator.
+3. An OpenAI model proposes later single-change candidates through the
+   Responses API, using the contract in `context.py` and reference notes in
+   `knowledge_base.md`.
 
-Iteration 0 isn't written by Claude — it's `seed_pipeline.py`, a faithful
-reimplementation of the official FM baseline through this harness's I/O
-contract. It exists to prove the harness reproduces the published baseline
-numbers before any LLM-authored changes are layered on top.
+Candidates write only an aligned `scores.npy` plus optional diagnostics. The
+orchestrator independently validates and evaluates validation scores, records
+the tree and code diff, repairs runtime failures, applies a paired second-seed
+promotion check to sub-`0.002` gains, and checkpoints after every durable log
+entry. That two-seed check is a search heuristic, not a significance test.
 
-## Setup
+The bootstrap candidate uses the textbook BPR pairwise loss with
+benchmark-adapted observed-negative sampling, so it is best described as an
+observed-negative BPR-style FM rather than a canonical implicit-feedback BPR
+sampler. Each eligible positive is paired with a uniformly sampled logged
+zero-label impression from the same user; positives from all-positive users
+cannot form pairs and are skipped. In the recorded paired check, seed 1 raised
+primary by `0.000460` while nDCG@5 declined by `0.000177`; the two-seed mean
+primary gain was `0.001194`. Promotion records a search decision, not a
+statistically confirmed improvement. This is also a pipeline comparison rather
+than a clean loss-only ablation: the pointwise and pairwise epochs contain
+different numbers of optimizer steps, changing the effective update and dense
+regularization schedules.
 
-```bash
-pip install -r agent/requirements.txt
-```
+Research candidates are passed a generated data view with no test rows.
+One-time finalization uses the exact saved winner and a separate view in which
+every test outcome is masked. It writes a submission but never calculates test
+metrics. The AST/subprocess layer is best-effort; use a container or VM that
+mounts only the generated view if generated code must be treated as hostile.
 
-Get an API key from https://console.anthropic.com and set it as an
-environment variable (don't paste it into a chat or commit it anywhere):
-
-```bash
-# bash
-export ANTHROPIC_API_KEY=sk-...
-```
-```powershell
-# PowerShell
-$env:ANTHROPIC_API_KEY = "sk-..."
-```
-
-## Run
+Quick validation-only run with no API key (iterations 0 and 1 only):
 
 ```bash
+python agent/orchestrator.py --max_iterations 2 --run_dir /tmp/woof-bpr-run
+```
+
+Full autonomous run:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+# In .env, replace OPENAI_API_KEY with your real key.
+# OPENAI_MODEL defaults to gpt-5.6-terra; change it if unavailable.
+python agent/preflight.py --require_llm
 python agent/orchestrator.py --max_iterations 50 --wall_clock_hours 6
 ```
 
-Useful flags:
-- `--model claude-sonnet-5` (default) — swap for a different model id if you want.
-- `--fresh` — wipe `agent/iterations/` and `run_log.jsonl` and start over.
-- `--data_dir path/to/KuaiRand-Pure/data` — if the data isn't in the default location.
+The repository-root `.env` is loaded automatically, and `--model <model-id>`
+overrides `OPENAI_MODEL` for one command. Never put the real key in source,
+chat, logs, screenshots, or a commit. Nodes after iteration 1 require OpenAI;
+`--max_iterations 2` does not call the API. See the
+[official OpenAI Responses API reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create).
 
-Each run's artifacts land in `agent/`:
-- `run_log.jsonl` — the deliverable run log (one JSON object per iteration).
-- `iterations/iter_XXXX/` — that iteration's exact `pipeline.py`, `metrics.json`,
-  and saved `valid_scores.npy` / `test_scores.npy`.
-- `best_pipeline.py` — the winning code.
-- `summary.json` — final scores, delta vs. baseline, token/wall-clock totals
-  (this is what the "resource usage" deliverable is built from).
-- `../submission.csv` — generated from the best iteration's saved test scores.
+Resume:
 
-## Known limitations (be upfront about these in your writeup)
+```bash
+python agent/orchestrator.py --resume agent/runs/<run-id>
+```
 
-- The safety check is a denylist, not a sandbox. It blocks the obvious stuff
-  (subprocess, network, file deletion, unapproved imports) but a
-  determined/broken model could still write a slow infinite loop, which the
-  per-iteration subprocess timeout (20 min) catches, or excessive memory use,
-  which it doesn't.
-- Only numpy + the Python standard library are importable inside a generated
-  `pipeline.py` (matching the starter kit's own numpy-only constraint) — no
-  auto `pip install`, so ideas that need torch/lightgbm/etc. won't run as-is
-  in this environment. The model is told this in its system prompt so it
-  should stick to numpy implementations.
-- The convergence rule is implemented against the *running best* validation
-  score (has the best-so-far moved by more than 0.002 in the last 3
-  iterations), which is one reasonable reading of the official ε/N rule but
-  worth double-checking against how the organizers score it if it matters for
-  your submission.
+This is defense-in-depth execution, not a hard security sandbox. The API key is
+removed from child environments, imports/calls are AST-checked, subprocesses
+have timeouts and process-group termination, and Linux gets resource limits.
+For high-assurance execution, place the whole runner inside a disposable
+container or VM.

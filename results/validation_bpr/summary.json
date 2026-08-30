@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "provisional": true,
+  "scope": "validation_only",
+  "run": {
+    "source_run_id": "woof-hardened-bpr-run",
+    "hardened_harness": true,
+    "provider": "builtin",
+    "iterations_evaluated": 2,
+    "stop_reason": "iteration_cap",
+    "converged": false,
+    "wall_clock_seconds": 64.10893201828003,
+    "gpu_hours": 0.0,
+    "llm_input_tokens": 0,
+    "llm_output_tokens": 0,
+    "manual_interventions": 0,
+    "failed_iterations": 0,
+    "recovery_events": 0
+  },
+  "validation": {
+    "rows": 124909,
+    "users": 22377,
+    "published_baseline": {
+      "GAUC": 0.6674,
+      "nDCG@5": 0.5357,
+      "primary": 0.6016
+    },
+    "reproduced_pointwise_fm_seed_0": {
+      "GAUC": 0.6671326321610643,
+      "nDCG@5": 0.5358048805448711,
+      "primary": 0.6014687563529677
+    },
+    "observed_negative_bpr_seed_0": {
+      "GAUC": 0.669711026116243,
+      "nDCG@5": 0.5370812958436111,
+      "primary": 0.603396160979927
+    },
+    "bpr_minus_reproduced_seed_0": {
+      "GAUC": 0.0025783939551787,
+      "nDCG@5": 0.00127641529874,
+      "primary": 0.0019274046269593
+    },
+    "bpr_minus_published_baseline": {
+      "GAUC": 0.002311026116243,
+      "nDCG@5": 0.0013812958436111,
+      "primary": 0.001796160979927
+    },
+    "paired_seed_1": {
+      "pointwise_fm": {
+        "GAUC": 0.6673954513271534,
+        "nDCG@5": 0.5361264979255884,
+        "primary": 0.6017609746263709
+      },
+      "observed_negative_bpr": {
+        "GAUC": 0.6684925928845061,
+        "nDCG@5": 0.5359491490122743,
+        "primary": 0.6022208709483903
+      },
+      "paired_delta": {
+        "GAUC": 0.0010971415573527,
+        "nDCG@5": -0.0001773489133141,
+        "primary": 0.0004598963220194
+      }
+    },
+    "two_seed_mean_paired_primary_gain": 0.0011936504744893
+  },
+  "integrity": {
+    "test_metrics_evaluated": false,
+    "finalized": false,
+    "submission_created": false,
+    "raw_data_in_bundle": false,
+    "per_row_scores_in_bundle": false,
+    "candidate_manifest_exposes_source_path": false,
+    "source_data_view_runtime_and_winner_hash_pinned": true,
+    "baseline_metric_tolerance": 0.002,
+    "source_run_log_sha256": "d0937ada2bfc0604861bde675a470921d3307b8a8bbd1b071d4b18ed62ccdf39",
+    "curated_run_log_sha256": "669b7938cb98496ec0e67b4094debbf037ec97d469512f03a657c03791eaeb7d",
+    "executed_diff_sha256": "3b3cea78df72694779bea78ca361aeb5ab6d587292b2b4726db32a46ef9753ce",
+    "executed_seed_pipeline_sha256": "995996598d426d2be8bed73292761d6be807670e9357f7183832812ca5286b2a",
+    "executed_bpr_pipeline_sha256": "e3b917660e7b8a91e9e3e4290c405887741e091c0fa367f9374c6191bbd6ec60"
+  }
+}

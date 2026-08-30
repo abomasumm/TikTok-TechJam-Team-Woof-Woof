@@ -3,6 +3,8 @@
   --model fm    : Factorization Machine（起步模型，学生从这里往上改）
   --model random: 随机打分（下界，用来自检评测代码没坏）
 只依赖 numpy。用法见 README.md
+命令行默认只评估 validation；仅在最终检查时显式使用
+``--evaluate-local-heldout`` 才会加载和评估本地 held-out 划分。
 """
 import argparse, collections, time
 import numpy as np
@@ -11,24 +13,39 @@ from evaluate import evaluate
 
 def sigmoid(x): return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
 
-# ---------------- item popularity（官方 baseline） ----------------
-def run_pop(splits, prior=20.0):
+# ---------------- item popularity ----------------
+def _eval_split_names(splits, eval_splits):
+    if eval_splits is None:
+        return tuple(name for name in ('valid', 'test') if name in splits)
+    if isinstance(eval_splits, str):
+        eval_splits = (eval_splits,)
+    names = tuple(dict.fromkeys(eval_splits))
+    unknown = [name for name in names if name not in ('valid', 'test')]
+    if unknown:
+        raise ValueError(f"evaluation splits must be valid/test, got {unknown}")
+    missing = [name for name in names if name not in splits]
+    if missing:
+        raise ValueError(f"requested evaluation split(s) were not loaded: {missing}")
+    return names
+
+
+def run_pop(splits, prior=20.0, eval_splits=('valid',)):
     pos, imp = collections.Counter(), collections.Counter()
     for x in splits['train']:
         imp[x[2]] += 1; pos[x[2]] += x[6]
     gmean = sum(pos.values()) / sum(imp.values())
     score = lambda v: (pos[v] + prior * gmean) / (imp[v] + prior) if imp[v] else gmean
     out = {}
-    for name in ('valid', 'test'):
+    for name in _eval_split_names(splits, eval_splits):
         rws = splits[name]
         out[name] = evaluate([x[1] for x in rws], [x[6] for x in rws],
                              [score(x[2]) for x in rws])
     return out
 
-def run_random(splits, seed=0):
+def run_random(splits, seed=0, eval_splits=('valid',)):
     rng = np.random.default_rng(seed)
     out = {}
-    for name in ('valid', 'test'):
+    for name in _eval_split_names(splits, eval_splits):
         rws = splits[name]
         out[name] = evaluate([x[1] for x in rws], [x[6] for x in rws],
                              rng.random(len(rws)))
@@ -72,9 +89,20 @@ class FM:
     def predict(self, X, bs=200_000):
         return np.concatenate([self.logits(X[i:i + bs])[0] for i in range(0, len(X), bs)])
 
-def run_fm(splits, k=16, lr=0.001, epochs=40, bs=8192, patience=4, seed=0, verbose=True):
-    enc, dim = encode(splits)
-    Xtr, ytr, _ = enc['train']; Xva, yva, uva = enc['valid']; Xte, yte, ute = enc['test']
+def run_fm(splits, k=16, lr=0.001, epochs=40, bs=8192, patience=4,
+           seed=0, verbose=True, eval_splits=('valid',)):
+    """Train with validation early stopping and score only requested splits.
+
+    The programmatic default is validation-only. Passing ``None`` is an
+    explicit opt-in to evaluate every loaded valid/test split; development
+    callers should avoid loading test altogether.
+    """
+    names = _eval_split_names(splits, eval_splits)
+    if 'train' not in splits or 'valid' not in splits:
+        raise ValueError("run_fm requires loaded 'train' and 'valid' splits")
+    needed = tuple(dict.fromkeys(('train', 'valid') + names))
+    enc, dim = encode({name: splits[name] for name in needed})
+    Xtr, ytr, _ = enc['train']; Xva, yva, uva = enc['valid']
     m = FM(dim, k=k, lr=lr, seed=seed)
     rng = np.random.default_rng(seed)
     best, best_state, bad = -1, None, 0
@@ -94,10 +122,14 @@ def run_fm(splits, k=16, lr=0.001, epochs=40, bs=8192, patience=4, seed=0, verbo
                 if verbose: print(f"  early stop at epoch {ep}")
                 break
     m.V, m.W, m.b = best_state
-    return {'valid': evaluate(uva, yva, m.predict(Xva)),
-            'test':  evaluate(ute, yte, m.predict(Xte))}
+    out = {}
+    for name in names:
+        X, y, users = enc[name]
+        out[name] = evaluate(users, y, m.predict(X))
+    return out
 
-if __name__ == '__main__':
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--data_dir', default='./KuaiRand-Pure/data',
                     help='KuaiRand-Pure 解压后的 data 目录')
@@ -106,13 +138,30 @@ if __name__ == '__main__':
     ap.add_argument('--lr', type=float, default=0.001)
     ap.add_argument('--epochs', type=int, default=40)
     ap.add_argument('--seed', type=int, default=0)
-    a = ap.parse_args()
+    ap.add_argument(
+        '--evaluate-local-heldout', action='store_true',
+        help=('explicitly evaluate the local held-out test split; do not use '
+              'during iterative development'),
+    )
+    a = ap.parse_args(argv)
+    eval_splits = ('valid', 'test') if a.evaluate_local_heldout else ('valid',)
+    load_splits = ('train', 'valid', 'test') if a.evaluate_local_heldout else ('train', 'valid')
     print(f"loading {a.data_dir} ...")
-    splits = load(a.data_dir)
+    splits = load(a.data_dir, split_names=load_splits)
     print({k_: len(v) for k_, v in splits.items()}, f"fields={FIELDS}")
-    res = {'pop': run_pop, 'random': lambda s: run_random(s, a.seed),
-           'fm': lambda s: run_fm(s, k=a.k, lr=a.lr, epochs=a.epochs, seed=a.seed)}[a.model](splits)
+    res = {
+        'pop': lambda s: run_pop(s, eval_splits=eval_splits),
+        'random': lambda s: run_random(s, a.seed, eval_splits=eval_splits),
+        'fm': lambda s: run_fm(
+            s, k=a.k, lr=a.lr, epochs=a.epochs, seed=a.seed,
+            eval_splits=eval_splits,
+        ),
+    }[a.model](splits)
     print(f"\n=== {a.model} (seed={a.seed}) ===")
-    for sp in ('valid', 'test'):
+    for sp in eval_splits:
         r = res[sp]
         print(f"  {sp:5s}  GAUC {r['GAUC']:.4f} | nDCG@5 {r['nDCG@5']:.4f} | primary {r['primary']:.4f}")
+
+
+if __name__ == '__main__':
+    main()

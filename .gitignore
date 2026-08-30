@@ -1,0 +1,19 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local credentials. Keep the documented, secret-free template tracked.
+.env
+.env.*
+!.env.example
+
+# Local benchmark data and generated research artifacts.
+KuaiRand-Pure/
+KuaiRand-Pure.tar.gz
+agent/runs/
+submission*.csv
+
+# Preserved upstream starter-kit notes; README.md is the current project guide.
+README.md.bak

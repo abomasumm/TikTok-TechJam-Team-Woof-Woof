@@ -1,12 +1,18 @@
-"""Immutable iteration-0 Factorization Machine baseline.
+"""Knowledge-pack bootstrap candidate: observed-negative BPR-style FM.
 
-The candidate contract is intentionally narrow: train on the official training
-split, use validation only for early stopping, and write scores for exactly one
-requested target split. The trusted orchestrator computes validation metrics;
-this file never evaluates the held-out split.
+The loss is the textbook BPR pairwise objective, adapted to this impression-
+ranking benchmark by using observed outcomes: each eligible `long_view=1`
+training impression is paired with a uniformly sampled logged `long_view=0`
+impression from the same user.  Positives from all-positive users cannot form a
+pair and are skipped; unexposed catalogue items are never treated as negatives.
+Because one pair is sampled per eligible positive, an epoch has fewer optimizer
+steps than a full pointwise epoch.  Comparisons with the pointwise baseline are
+therefore pipeline comparisons, not clean loss-only ablations; the update count
+and effective dense-regularization schedule differ too.
 """
 
 import argparse
+import collections
 import json
 import os
 import time
@@ -21,12 +27,11 @@ def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
 
 
-class FM:
+class BPRFM:
     def __init__(self, dim, k=16, lr=0.001, l2=1e-6, seed=0):
         rng = np.random.default_rng(seed)
         self.V = rng.normal(0, 0.01, (dim, k)).astype(np.float32)
         self.W = np.zeros(dim, dtype=np.float32)
-        self.b = np.float32(0.0)
         self.lr, self.l2 = lr, l2
         self.mV = np.zeros_like(self.V)
         self.vV = np.zeros_like(self.V)
@@ -38,31 +43,35 @@ class FM:
         embeddings = self.V[X]
         summed = embeddings.sum(1)
         interaction = 0.5 * ((summed**2).sum(1) - (embeddings**2).sum((1, 2)))
-        return self.b + self.W[X].sum(1) + interaction, embeddings, summed
+        return self.W[X].sum(1) + interaction, embeddings, summed
 
-    def step(self, X, y):
-        batch_size = len(y)
-        z, embeddings, summed = self.logits(X)
-        probabilities = sigmoid(z)
-        gradient = ((probabilities - y) / batch_size).astype(np.float32)
+    def pair_step(self, X_positive, X_negative):
+        batch_size = len(X_positive)
+        z_positive, e_positive, s_positive = self.logits(X_positive)
+        z_negative, e_negative, s_negative = self.logits(X_negative)
+        difference = z_positive - z_negative
+        probability = sigmoid(difference)
+        positive_gradient = ((probability - 1.0) / batch_size).astype(np.float32)
+        negative_gradient = -positive_gradient
+
         grad_v = np.zeros_like(self.V)
         grad_w = np.zeros_like(self.W)
-        np.add.at(grad_w, X, gradient[:, None])
+        np.add.at(grad_w, X_positive, positive_gradient[:, None])
+        np.add.at(grad_w, X_negative, negative_gradient[:, None])
         np.add.at(
             grad_v,
-            X,
-            gradient[:, None, None] * (summed[:, None, :] - embeddings),
+            X_positive,
+            positive_gradient[:, None, None] * (s_positive[:, None, :] - e_positive),
+        )
+        np.add.at(
+            grad_v,
+            X_negative,
+            negative_gradient[:, None, None] * (s_negative[:, None, :] - e_negative),
         )
         grad_v += self.l2 * self.V
         grad_w += self.l2 * self.W
         self._adam_update(grad_v, grad_w)
-        self.b -= self.lr * gradient.sum()
-        return float(
-            -np.mean(
-                y * np.log(probabilities + 1e-9)
-                + (1 - y) * np.log(1 - probabilities + 1e-9)
-            )
-        )
+        return float(np.mean(np.logaddexp(0.0, -difference)))
 
     def _adam_update(self, grad_v, grad_w):
         self.t += 1
@@ -87,6 +96,38 @@ class FM:
         return np.concatenate(chunks) if chunks else np.empty(0, dtype=np.float32)
 
 
+def build_pair_groups(users, labels):
+    grouped = collections.defaultdict(lambda: [[], []])
+    for index, (user_id, label) in enumerate(zip(users, labels)):
+        grouped[user_id][int(label)].append(index)
+
+    groups = []
+    for negative, positive in grouped.values():
+        if positive and negative:
+            groups.append(
+                (
+                    np.asarray(positive, dtype=np.int64),
+                    np.asarray(negative, dtype=np.int64),
+                )
+            )
+    if not groups:
+        raise ValueError("BPR requires a user with both positive and negative labels")
+    return groups
+
+
+def sample_pairs(groups, rng):
+    positive_parts = []
+    negative_parts = []
+    for positives, negatives in groups:
+        positive_parts.append(positives)
+        sampled = rng.integers(0, len(negatives), size=len(positives))
+        negative_parts.append(negatives[sampled])
+    positive_indices = np.concatenate(positive_parts)
+    negative_indices = np.concatenate(negative_parts)
+    order = rng.permutation(len(positive_indices))
+    return positive_indices[order], negative_indices[order]
+
+
 def train_and_predict(
     data_dir,
     target_split="valid",
@@ -100,30 +141,34 @@ def train_and_predict(
     requested = ("train", "valid") if target_split == "valid" else ("train", "valid", "test")
     splits = load(data_dir, split_names=requested)
     encoded, dimension = encode(splits)
-    X_train, y_train, _ = encoded["train"]
+    X_train, y_train, train_users = encoded["train"]
     X_valid, y_valid, valid_users = encoded["valid"]
+    groups = build_pair_groups(train_users, y_train)
 
-    model = FM(dimension, k=k, lr=lr, seed=seed)
+    model = BPRFM(dimension, k=k, lr=lr, seed=seed)
     rng = np.random.default_rng(seed)
     best_primary = -1.0
     best_state = None
     bad_epochs = 0
     loss_history = []
     valid_history = []
+    pair_count = 0
 
     for _epoch in range(1, epochs + 1):
-        indices = rng.permutation(len(y_train))
+        positive_indices, negative_indices = sample_pairs(groups, rng)
+        pair_count = len(positive_indices)
         losses = []
-        for start in range(0, len(indices), batch_size):
-            batch = indices[start : start + batch_size]
-            losses.append(model.step(X_train[batch], y_train[batch]))
+        for start in range(0, pair_count, batch_size):
+            positive = positive_indices[start : start + batch_size]
+            negative = negative_indices[start : start + batch_size]
+            losses.append(model.pair_step(X_train[positive], X_train[negative]))
         valid_metrics = evaluate(valid_users, y_valid, model.predict(X_valid))
         loss_history.append(float(np.mean(losses)))
         valid_history.append(float(valid_metrics["primary"]))
         if valid_metrics["primary"] > best_primary + 1e-5:
             best_primary = float(valid_metrics["primary"])
             bad_epochs = 0
-            best_state = (model.V.copy(), model.W.copy(), np.float32(model.b))
+            best_state = (model.V.copy(), model.W.copy())
         else:
             bad_epochs += 1
             if bad_epochs >= patience:
@@ -131,12 +176,15 @@ def train_and_predict(
 
     if best_state is None:
         raise RuntimeError("training produced no checkpoint")
-    model.V, model.W, model.b = best_state
+    model.V, model.W = best_state
     scores = model.predict(encoded[target_split][0]).astype(np.float64)
     diagnostics = {
-        "method": "pointwise_factorization_machine",
-        "source": "Rendle, Factorization Machines (2010)",
+        "method": "observed_negative_bpr_style_factorization_machine",
+        "source": "Rendle et al., Bayesian Personalized Ranking (UAI 2009)",
+        "negative_sampling": "uniform logged same-user long_view=0 impressions",
         "fields": list(FIELDS),
+        "eligible_user_groups": len(groups),
+        "pairs_per_epoch": pair_count,
         "epochs_completed": len(loss_history),
         "train_loss": loss_history,
         "validation_primary_during_training": valid_history,

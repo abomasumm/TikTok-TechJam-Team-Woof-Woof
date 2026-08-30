@@ -16,20 +16,43 @@
 用法：
     python3 submit.py --make   submission.csv     # 用官方 FM baseline 生成一份示例提交
     python3 submit.py --check  submission.csv     # 校验格式与对齐
-    python3 submit.py --score  submission.csv     # 校验并打分（仅本地 valid 可用）
+    python3 submit.py --score --split valid submission_valid.csv
+                                                    # 校验并打分（仅 valid）
 """
-import argparse, csv, sys
+import argparse
+import csv
+import math
+
 from data import load, encode
 from evaluate import evaluate
 
 HEADER = ['row_id', 'user_id', 'video_id', 'score']
 
 def write_submission(path, rows, scores):
+    """写出提交文件，并在打开目标文件前校验分数数量和有效性。"""
+    if not hasattr(rows, '__len__'):
+        rows = list(rows)
+    if not hasattr(scores, '__len__'):
+        scores = list(scores)
+    if len(scores) != len(rows):
+        raise ValueError(
+            f"score 数量 {len(scores)} 与评测集行数 {len(rows)} 不一致"
+        )
+    numeric_scores = []
+    for i, score in enumerate(scores):
+        try:
+            value = float(score)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"第 {i} 个 score 无法解析为数字：{score!r}") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"第 {i} 个 score 是 NaN/Inf，不允许")
+        numeric_scores.append(value)
+
     with open(path, 'w', newline='') as fh:
         w = csv.writer(fh)
         w.writerow(HEADER)
-        for i, (x, s) in enumerate(zip(rows, scores)):
-            w.writerow([i, x[1], x[2], f"{float(s):.6g}"])
+        for i, (x, score) in enumerate(zip(rows, numeric_scores)):
+            w.writerow([i, x[1], x[2], f"{score:.17g}"])
 
 def read_submission(path, rows):
     """读取并逐行校验对齐，返回 scores。任何不一致都抛出可读错误。"""
@@ -61,7 +84,7 @@ def read_submission(path, rows):
         raise ValueError(f"提交 {n} 行，评测集 {len(rows)} 行，数量不符")
     return scores
 
-if __name__ == '__main__':
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('path')
     ap.add_argument('--data_dir', default='./KuaiRand-Pure/data')
@@ -69,14 +92,20 @@ if __name__ == '__main__':
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument('--make',  action='store_true', help='用官方 FM baseline 生成示例提交')
     g.add_argument('--check', action='store_true', help='只校验格式与对齐')
-    g.add_argument('--score', action='store_true', help='校验并打分')
-    a = ap.parse_args()
+    g.add_argument('--score', action='store_true', help='校验并打分（仅 valid 划分）')
+    a = ap.parse_args(argv)
 
-    splits = load(a.data_dir)
+    if a.score and a.split != 'valid':
+        ap.error('--score is restricted to --split valid; held-out test scoring is disabled')
+
+    if a.make:
+        load_splits = ('train', 'valid', a.split)
+    else:
+        load_splits = (a.split,)
+    splits = load(a.data_dir, split_names=load_splits)
     rows = splits[a.split]
 
     if a.make:
-        from baseline import run_fm
         import baseline as B, numpy as np
         enc, dim = encode(splits)
         Xtr, ytr, _ = enc['train']
@@ -103,3 +132,7 @@ if __name__ == '__main__':
         if a.score:
             r = evaluate([x[1] for x in rows], [x[6] for x in rows], scores)
             print(f"  GAUC {r['GAUC']:.4f} | nDCG@5 {r['nDCG@5']:.4f} | primary {r['primary']:.4f}")
+
+
+if __name__ == '__main__':
+    main()
