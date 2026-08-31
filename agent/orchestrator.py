@@ -489,10 +489,10 @@ def run_candidate(
             raise ValueError(f"candidate wrote unexpected files: {unexpected_attempt}")
         allowed_artifacts = {"scores.npy", "diagnostics.json"}
         unexpected_artifacts = sorted(
-            str(path.relative_to(artifact_dir))
+            path.relative_to(artifact_dir).as_posix()
             for path in artifact_dir.rglob("*")
             if path.is_file()
-            and str(path.relative_to(artifact_dir)) not in allowed_artifacts
+            and path.relative_to(artifact_dir).as_posix() not in allowed_artifacts
         )
         if unexpected_artifacts:
             raise ValueError(f"candidate wrote unexpected artifacts: {unexpected_artifacts}")
@@ -519,7 +519,8 @@ def run_candidate(
 
 def promote_attempt(iteration_dir, code, result, attempt_number):
     iteration_dir = Path(iteration_dir)
-    (iteration_dir / "pipeline.py").write_text(code, encoding="utf-8")
+    with open(iteration_dir / "pipeline.py", "w", encoding="utf-8", newline="") as handle:
+        handle.write(code)
     source_dir = Path(result["artifact_dir"])
     shutil.copy2(source_dir / "scores.npy", iteration_dir / "valid_scores.npy")
     if (source_dir / "diagnostics.json").exists():
@@ -666,7 +667,8 @@ def execute_with_repairs(
             attempt_dir = Path(iteration_dir) / f"attempt_{attempt_number:02d}"
             attempt_dir.mkdir(parents=True, exist_ok=True)
             code_path = attempt_dir / "pipeline.py"
-            code_path.write_text(code, encoding="utf-8")
+            with open(code_path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(code)
             try:
                 os.chmod(code_path, 0o444)
             except OSError:
@@ -789,7 +791,7 @@ def recommend_direction(history):
 def build_user_prompt(parent_entry, parent_code, history, best_entry, recommended):
     recent = []
     for entry in history[-20:]:
-        metric = entry.get("metrics", {}).get("valid", {})
+        metric = (entry.get("metrics") or {}).get("valid") or {}
         score = metric.get("primary")
         outcome = f"primary={score:.6f}" if score is not None else f"FAILED: {entry.get('error', '')[:160]}"
         recent.append(
@@ -826,6 +828,26 @@ from it only with a specific evidence-based reason."""
 
 def has_converged(best_curve, epsilon, rounds):
     return len(best_curve) >= rounds + 1 and best_curve[-1] - best_curve[-1 - rounds] <= epsilon
+
+
+def has_unexplored_priority_direction(history):
+    """True if a whole DIRECTION_PRIORITY family has never been attempted.
+
+    has_converged alone can trigger almost immediately whenever the first
+    real win's gain is itself smaller than epsilon (comparing best-now to
+    best-N-iterations-ago), regardless of which directions were actually
+    tried. Gating the stop decision on this prevents the search from calling
+    itself converged before the roadmap's later families (history, multitask,
+    ...) ever got a single attempt.
+    """
+    attempted_roots = {
+        entry.get("direction", "").split("/", 1)[0]
+        for entry in history
+        if entry.get("iteration", 0) > 0
+    }
+    return any(
+        direction.split("/", 1)[0] not in attempted_roots for direction in DIRECTION_PRIORITY
+    )
 
 
 def code_diff(parent_code, candidate_code, parent_id, iteration):
@@ -1585,7 +1607,9 @@ def _run_locked(args, data_dir, run_dir, openai_config=None):
         if deadline - time.time() <= timeout_seconds + 1:
             stop_reason = "wall_clock_reserve_for_finalization"
             break
-        if has_converged(state["best_curve"], state["epsilon"], state["convergence_rounds"]):
+        if has_converged(
+            state["best_curve"], state["epsilon"], state["convergence_rounds"]
+        ) and not has_unexplored_priority_direction(history):
             stop_reason = "converged"
             break
 
