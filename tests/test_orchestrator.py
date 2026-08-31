@@ -472,6 +472,88 @@ class SearchStateTests(unittest.TestCase):
         self.assertTrue(orchestrator.has_converged([0.60, 0.601, 0.6015, 0.6019], 0.002, 3))
         self.assertFalse(orchestrator.has_converged([0.60, 0.601, 0.602, 0.6021], 0.002, 3))
 
+    def test_official_mode_keeps_official_convergence_authoritative(self):
+        curve = [0.6000, 0.6010, 0.6015, 0.6019]
+        self.assertTrue(
+            orchestrator.should_stop_search([], curve, 0.002, 3, "official")
+        )
+        self.assertFalse(
+            orchestrator.should_stop_search([], curve, 0.002, 3, "campaign")
+        )
+
+    def test_campaign_counts_only_successfully_evaluated_directions(self):
+        failed = [
+            {
+                "iteration": index + 1,
+                "direction": direction,
+                "status": "failed",
+                "metrics": None,
+            }
+            for index, direction in enumerate(orchestrator.DIRECTION_PRIORITY)
+        ]
+        self.assertTrue(orchestrator.has_unexplored_priority_direction(failed))
+
+        successful = [
+            {
+                "iteration": index + 1,
+                "direction": direction,
+                "status": "ok",
+                "metrics": {"valid": {"primary": 0.6}},
+            }
+            for index, direction in enumerate(orchestrator.DIRECTION_PRIORITY)
+        ]
+        self.assertFalse(orchestrator.has_unexplored_priority_direction(successful))
+        curve = [0.6000, 0.6010, 0.6015, 0.6019]
+        self.assertTrue(
+            orchestrator.should_stop_search(successful, curve, 0.002, 3, "campaign")
+        )
+
+    def test_first_pass_rotates_after_a_validated_family(self):
+        history = [
+            {
+                "iteration": 1,
+                "direction": "loss/bpr",
+                "status": "ok",
+                "metrics": {"valid": {"primary": 0.603}},
+                "is_best": True,
+            }
+        ]
+        self.assertEqual(orchestrator.recommend_direction(history), orchestrator.DIRECTION_PRIORITY[1])
+
+    def test_first_pass_routes_around_repeated_proposal_failures(self):
+        history = [
+            {
+                "iteration": 1,
+                "direction": orchestrator.DIRECTION_PRIORITY[0],
+                "status": "ok",
+                "metrics": {"valid": {"primary": 0.603}},
+                "is_best": True,
+            },
+            {
+                "iteration": 2,
+                "direction": orchestrator.DIRECTION_PRIORITY[1],
+                "status": "failed",
+                "metrics": None,
+                "is_best": False,
+            },
+            {
+                "iteration": 3,
+                "direction": orchestrator.DIRECTION_PRIORITY[1],
+                "status": "failed",
+                "metrics": None,
+                "is_best": False,
+            },
+        ]
+        self.assertEqual(orchestrator.recommend_direction(history), orchestrator.DIRECTION_PRIORITY[2])
+
+    def test_rejected_nodes_are_never_selected_as_parents(self):
+        history = [
+            {"iteration": 0, "status": "ok"},
+            {"iteration": 1, "status": "ok"},
+            {"iteration": 2, "status": "ok"},
+        ]
+        self.assertEqual(orchestrator.select_parent(history, 1, 5, 0.002), 1)
+
     def test_reconcile_log_ahead_of_state(self):
         state = {
             "next_iteration": 1,

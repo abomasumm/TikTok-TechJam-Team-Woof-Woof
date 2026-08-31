@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 KNOWLEDGE_BASE_PATH = Path(__file__).with_name("knowledge_base.md")
+EXPERIMENT_MEMORY_PATH = Path(__file__).with_name("experiment_memory.md")
 
 
 AGENT_CONTRACT = r"""
@@ -157,13 +158,27 @@ def _load_knowledge_base():
         ) from exc
 
 
+def _load_experiment_memory():
+    """Return durable validation-only evidence from earlier local runs."""
+    try:
+        return EXPERIMENT_MEMORY_PATH.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot load local experiment memory: {EXPERIMENT_MEMORY_PATH}"
+        ) from exc
+
+
 def build_system_prompt():
     """Build the stable contract plus the bundled, reference-only research notes."""
     knowledge = _load_knowledge_base()
+    experiment_memory = _load_experiment_memory()
     return (
         AGENT_CONTRACT
         + "\n\n"
         + "--- BEGIN BUNDLED REFERENCE MATERIAL (NOT INSTRUCTIONS) ---\n\n"
         + knowledge
         + "\n\n--- END BUNDLED REFERENCE MATERIAL ---"
+        + "\n\n--- BEGIN LOCAL VALIDATION EVIDENCE (NOT INSTRUCTIONS) ---\n\n"
+        + experiment_memory
+        + "\n\n--- END LOCAL VALIDATION EVIDENCE ---"
     )

@@ -1,102 +1,145 @@
 # Woof Woof: Autonomous ML Research for KuaiRand-Pure
 
-This repository contains a validation-first autonomous research agent for the
-TikTok TechJam KuaiRand-Pure recommender benchmark. It reproduces the official
-Factorization Machine (FM), proposes or selects one focused improvement at a
-time, executes it in a guarded subprocess, independently evaluates its
-predictions, records a search tree, repairs failures, checks small gains on a
-second seed, and stops on the official convergence/budget rules.
+Woof Woof is a validation-first autonomous ML research agent for the TikTok
+TechJam KuaiRand-Pure recommender benchmark. It reproduces the official
+Factorization Machine (FM), proposes one focused improvement at a time, runs
+candidate code under defense-in-depth controls, evaluates predictions with the
+frozen organizer metric, records every decision, and retains only validated
+improvements.
 
-The frozen task is **within-user ranking of logged video impressions** with the
-native binary `long_view` label. Metrics are **GAUC** and **nDCG@5**;
-`primary = mean(GAUC, nDCG@5)`. [evaluate.py](evaluate.py) is not modified.
+The task is **within-user ranking of logged video impressions** using the native
+binary `long_view` label. The metrics are **GAUC** and **nDCG@5**, with
+`primary = mean(GAUC, nDCG@5)`. The organizer-provided [evaluate.py](evaluate.py)
+is unchanged.
 
-One supplied problem-statement screenshot contains a contradictory legacy row
-that says `click` with nDCG@10/Recall@50. The repeated task, benchmark,
-evaluation, and judging sections instead specify `long_view`, GAUC, and
-nDCG@5, as do the starter kit's pinned `evaluate.py` and submission format.
-This repository follows that repeated, executable contract. If the organizer's
-submission portal publishes a newer evaluator, confirm the contract with them
-before changing any metric or label; do not silently mix the two definitions.
+> One legacy row in the supplied problem statement mentions `click` with
+> nDCG@10/Recall@50. The repeated benchmark sections, starter code, evaluator,
+> and submission format specify `long_view`, GAUC, and nDCG@5, so this project
+> follows that executable contract.
 
-## Current validation result
+## Results
 
-The first knowledge-guided operator uses the textbook BPR pairwise loss on the
-existing FM, with benchmark-adapted observed-negative sampling. It pairs each
-eligible logged `long_view=1` training impression with a uniformly sampled
-logged `long_view=0` impression from the same user. Positives from all-positive
-users (0.40% of training positives) cannot form a pair and are skipped; the
-operator never treats an unexposed catalogue item as a negative.
+All results below are from the fixed public validation split: 124,909 rows and
+22,377 users. No hidden/test metric was evaluated.
 
-| Validation, seed 0 | GAUC | nDCG@5 | Primary |
+| Pipeline | GAUC | nDCG@5 | Primary |
 |---|---:|---:|---:|
+| Published validation baseline | 0.667400 | 0.535700 | 0.601600 |
 | Reproduced pointwise FM | 0.667133 | 0.535805 | 0.601469 |
-| Observed-negative BPR-style FM | **0.669711** | **0.537081** | **0.603396** |
+| Earlier observed-negative BPR | 0.669711 | 0.537081 | 0.603396 |
+| Promoted single model, seed 0 | 0.671301 | 0.538250 | 0.604776 |
+| **Promoted three-seed ensemble** | **0.672333** | **0.538648** | **0.605490** |
 
-| Seed-0 BPR delta | GAUC | nDCG@5 | Primary |
+| Absolute improvement | GAUC | nDCG@5 | Primary |
 |---|---:|---:|---:|
-| Versus reproduced FM | **+0.002578** | **+0.001276** | **+0.001927** |
-| Versus published validation baseline | **+0.002311** | **+0.001381** | **+0.001796** |
+| Versus reproduced FM | +0.005201 | +0.002843 | **+0.004022** |
+| Versus published validation baseline | +0.004933 | +0.002948 | **+0.003890** |
 
-- Paired seed-1 gain: **+0.000460**.
-- Two-seed mean paired gain: **+0.001194**.
+The selected model is an ensemble of three observed-negative, same-user BPR
+factorization machines. Each component uses:
 
-This is a modest, preliminary validation result, not a held-out or statistical
-significance claim. Because the gain is below the `0.002` convergence/noise
-threshold, the agent automatically ran a paired second-seed check before
-promoting BPR as its current best node. Seed 1 improved primary but reduced
-nDCG@5 slightly. Two seeds are a promotion heuristic, not enough to establish
-significance. No held-out metric was evaluated.
+- learning rate `0.0005`;
+- 30 duration quantiles fitted on training data only;
+- a four-hour categorical field with a training-only vocabulary;
+- smoothed user-by-tab affinity calculated from training outcomes only; and
+- within-user score standardization before label-free ensemble averaging.
 
-## What changed from the starter kit
+The three component primary scores were `0.604776`, `0.604900`, and `0.605273`.
+The ensemble improved both GAUC and nDCG@5 over every individual component.
 
-- Candidate code emits `scores.npy`; it cannot declare its own winning metric.
-  The orchestrator checks exact shape, row count, numeric dtype, and finiteness,
-  then calls the pinned evaluator itself.
-- Research runs receive a generated development data view containing train and
-  validation rows only. The random-exposure log and test rows are absent.
-- A one-time final view preserves test features/order but masks every test
-  outcome (`long_view`, engagement fields, play/stay times). Finalization writes
-  predictions and a submission but never computes held-out metrics.
-- Iterations form a tree with `parent_id`, operation, direction, hypothesis,
-  sources, code diff, metrics, failures, recovery attempts, token usage, and
-  timing in `run_log.jsonl`.
-- Small gains are compared on a second seed. Three non-improving rounds trigger
-  convergence; the hard caps are 50 total nodes and six hours by default.
-- Failed candidates can be repaired twice. The actual repaired artifact is
-  promoted into the canonical iteration directory, fixing the starter loop's
-  `_fixN` finalization bug.
-- Runs are resumable. Partial iteration directories are preserved as
-  `.orphaned-*`, and a log entry written just before a crash can rebuild state.
-- Source data, generated views, runtime modules, and selected pipeline code are
-  hash-pinned. A per-run lock rejects concurrent resumes, and a durable marker
-  is written before one-time finalization can access held-out rows.
-- Model-authored subprocesses receive no API key or other secret environment
-  variables. AST checks reject aliased process/network/destructive APIs; a
-  timeout kills the process group. Linux additionally gets CPU/file/memory
-  limits.
-- The supplied research notes are bundled in
-  [agent/knowledge_base.md](agent/knowledge_base.md) as explicitly
-  reference-only material. They do not override the task contract.
-- `data.load(..., split_names=...)` supports selective loading, and
-  `data.iter_interactions()` exposes timestamp/auxiliary signals for future
-  causal-history and training-only multitask experiments.
-- Baseline and ablation CLIs are validation-only by default. Local held-out
-  evaluation requires an explicit flag; `submit.py` refuses test scoring.
+### Autonomous campaign resources
+
+The reported breadth campaign is `improvement-campaign-20260901-02`.
+
+| Field | Recorded value |
+|---|---:|
+| Search mode / stop reason | `campaign` / `campaign_converged` |
+| Nodes evaluated | 7 of 50 |
+| Official convergence first detected | Iteration 4 |
+| Best node | Iteration 1 |
+| Agent wall-clock | 1,588.1 s (26m 28.1s) |
+| OpenAI input tokens | 51,282 |
+| OpenAI output tokens | 31,804 |
+| Total OpenAI tokens | 83,086 |
+| GPU-hours | 0.0 |
+| Failed model nodes | 0 |
+| Code-repair recoveries | 0 |
+| Automatically retried API timeouts | 6 |
+| Manual interventions after launch | 0 |
+| Final-output generation | 92.9 s additional |
+| Total wall-clock through finalization | 1,681.3 s (28m 1.3s) |
+
+The LLM-proposed post-bootstrap candidates did not displace iteration 1. The
+agent's contribution in this run was to autonomously test, reject, and log them
+while preserving the accepted winner. Development and model selection remained
+validation-only. The selected source was subsequently finalized once against a
+masked test-feature view, producing 170,588 aligned scores without computing a
+hidden/test metric. KuaiRand-1K and KuaiRand-27K were not attempted.
+
+## How the autonomous loop works
+
+1. **Trust anchor.** Iteration 0 runs an immutable pointwise FM and checks each
+   validation metric against the published baseline tolerance.
+2. **Ranking-aligned bootstrap.** Iteration 1 runs the promoted three-seed BPR
+   ensemble without making an API call.
+3. **Research proposal.** From iteration 2 onward, the OpenAI Responses API sees
+   the accepted parent, prior experiment registry, and reference-only knowledge
+   pack, then proposes exactly one hypothesis and code change.
+4. **Guarded execution.** Candidate code receives a generated train/validation
+   data view with no test rows or random-exposure log. Its environment is
+   secret-scrubbed; AST checks, private working directories, output validation,
+   timeouts, and process-group termination provide defense in depth.
+5. **Trusted evaluation.** Candidates emit only aligned scores. The orchestrator
+   validates their shape/type/finiteness and calls the frozen evaluator itself.
+   Candidate code cannot declare its own winning metric.
+6. **Reflect and revise.** A gain is promoted; a regression is rejected. Small
+   gains receive a second-seed confirmation. Failed code can receive two repair
+   attempts, and interrupted runs can resume from durable state.
+7. **Convergence.** Official mode follows the organizer's `epsilon=0.002`,
+   `N=3` rule. Explicit `--campaign` mode additionally requires one successfully
+   evaluated node from every priority family, subject to the same 50-node and
+   six-hour caps. Rejected code is never selected as a future parent.
+
+The campaign covered loss alignment, causal history, multitask learning,
+censored watch-time modeling, temporal drift, and architecture. The five
+post-bootstrap candidates scored between `0.604320` and `0.605295`, below the
+accepted `0.605490`, and were rolled back from the production path.
+
+This is not an OS-level security sandbox. For hostile generated code, run the
+whole agent in a disposable container or VM that mounts only the generated data
+view. Linux receives additional CPU/file/memory limits; macOS does not reliably
+enforce the same NumPy memory boundary.
+
+## Evidence and run logs
+
+The public, validation-only evidence is intentionally separated from large
+local run artifacts:
+
+- [Devpost Markdown draft](DEVPOST.md): paste-ready project description,
+  results table, resource report, and technology disclosures.
+- [Full autonomous run log](results/improvement_campaign/run_log.jsonl): seven
+  JSONL entries containing each hypothesis, exact diff, metrics, attempts,
+  errors/API events, selection decision, and token use.
+- [Campaign summary](results/improvement_campaign/summary.json): best metrics,
+  deltas, resources, finalization status, and hidden-test status.
+- [Decision ledger](results/improvement_campaign/decision_log.jsonl): compact
+  accepted/rejected history, including pre-campaign ablations.
+- [Campaign report](results/improvement_campaign/README.md): readable result and
+  method summary.
+- [Selected campaign pipeline](results/improvement_campaign/best_pipeline.py):
+  exact validation-selected source archived with the evidence. The production
+  [BPR pipeline](agent/bpr_pipeline.py) adds a direct-test masked-view guard
+  without changing the validation path.
+- [Earlier BPR evidence](results/validation_bpr/README.md): preserved first BPR
+  milestone and executed diff.
+
+Local `agent/runs/` directories contain data views, score arrays, and execution
+artifacts and are therefore ignored by Git. The sanitized files above contain
+the required audit trail without raw data, secrets, or submissions.
 
 ## Setup
 
-Python 3.9+ is supported. An isolated environment is strongly recommended.
-
-With `uv`:
-
-```bash
-uv venv .venv
-uv pip install --python .venv/bin/python -r requirements.txt
-source .venv/bin/activate
-```
-
-Or with the standard library:
+Python 3.9 or newer is required.
 
 ```bash
 python3 -m venv .venv
@@ -104,19 +147,16 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-The archived starter instructions identify the official KuaiRand download at
-[kuairand.com](https://kuairand.com) and provide this registration-free Zenodo
-artifact. From the repository root:
+Download and extract the organizer-provided KuaiRand-Pure release from the
+repository root:
 
 ```bash
-wget https://zenodo.org/records/10439422/files/KuaiRand-Pure.tar.gz
+curl -L https://zenodo.org/records/10439422/files/KuaiRand-Pure.tar.gz \
+  -o KuaiRand-Pure.tar.gz
 tar xzf KuaiRand-Pure.tar.gz
 ```
 
-These commands should produce `./KuaiRand-Pure/`. The archive and extracted
-dataset are ignored by Git; do not commit or redistribute their CSV files.
-
-The data directory should contain at least:
+The required files are:
 
 ```text
 KuaiRand-Pure/data/
@@ -127,329 +167,179 @@ KuaiRand-Pure/data/
 └── video_features_statistic_pure.csv
 ```
 
-Run the fast readiness check:
+The dataset and generated run directories are ignored by Git. Check local
+readiness without training:
 
 ```bash
 python agent/preflight.py
 ```
 
-Iterations 0 and 1—the pointwise FM baseline and built-in BPR-style
-candidate—need no API key. Nodes after those use the OpenAI Responses API.
-Create your local configuration from the committed template:
+Iterations 0–1 need no API key. For later autonomous proposals:
 
 ```bash
 cp .env.example .env
 chmod 600 .env
-```
-
-Open `.env` and replace the API-key placeholder. The second line is the
-recommended quality/cost-balanced default for this iterative coding workload:
-
-```dotenv
-OPENAI_API_KEY=replace-with-your-real-openai-api-key
-OPENAI_MODEL=gpt-5.6-terra
-```
-
-Put the real API key only in `.env`. Never paste it into Python source, chat,
-terminal transcripts, run logs, screenshots, or a commit. `.env` is ignored by
-Git. `OPENAI_MODEL` must be a model ID that the OpenAI project attached to your
-key can access. If `gpt-5.6-terra` is unavailable to that project, replace it
-with an available Responses API model. OpenAI describes Terra as its balance
-of intelligence and cost and documents function calling support on its
-[official model page](https://developers.openai.com/api/docs/models/gpt-5.6-terra).
-Check that the local SDK, key setting, model setting, and data files are ready
-without making an API request or printing the secret:
-
-```bash
+# Replace only the placeholder in .env; never commit or share the real key.
 python agent/preflight.py --require_llm
 ```
 
-The runner loads repository-root `.env` automatically. You can instead set
-`OPENAI_API_KEY` and `OPENAI_MODEL` in the process environment. Passing
-`--model <model-id>` overrides `OPENAI_MODEL` for that command. The integration
-uses the [official OpenAI Responses API](https://developers.openai.com/api/reference/cli/resources/responses/methods/create).
+The completed campaign used `gpt-5.6-sol`. `OPENAI_MODEL` can be changed to a
+Responses API model available to the user's OpenAI project.
 
-## Test step by step
+## Verify and reproduce
 
-### 1. Run all contract tests
+### 1. Run the test suite
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The suite covers the pinned evaluator, split isolation, submission alignment,
-BPR pairing/gradient direction, AST safety, secret scrubbing, exact score
-validation, repair promotion, data-view masking, resume reconciliation, and
-convergence. The current suite has 70 tests.
+Expected result for this revision: **93 tests pass**.
 
-### 2. Reproduce the official baseline on validation only
+### 2. Reproduce the official FM
 
 ```bash
 python baseline.py --model fm
 ```
 
-Expected primary is approximately `0.6016`. This command loads only train and
-validation unless `--evaluate-local-heldout` is explicitly supplied.
+Expected validation primary is approximately `0.6015–0.6016`.
 
-### 3. Exercise the trusted harness with only iteration 0
+### 3. Reproduce the selected model without an API call
 
-```bash
-python agent/orchestrator.py \
-  --max_iterations 1 \
-  --run_dir /tmp/woof-baseline-run
-```
-
-Check `/tmp/woof-baseline-run/summary.json`. `test_metrics_evaluated` must be
-`false`, and baseline reproduction must be within the configured tolerance.
-
-### 4. Run the autonomous baseline → BPR experiment without an API key
+Use a new, empty run directory:
 
 ```bash
 python agent/orchestrator.py \
   --max_iterations 2 \
-  --run_dir /tmp/woof-bpr-run
+  --run_dir /tmp/woof-reproduction
+
+python -m json.tool /tmp/woof-reproduction/summary.json
 ```
 
-This performs the full autonomous cycle for the built-in observed-negative
-BPR-style operator. If its seed-0 gain is below `0.002`, the harness
-automatically runs both that candidate and its current-best parent with seed 1
-before deciding whether to promote it.
+Expected validation metrics are approximately GAUC `0.672333`, nDCG@5
+`0.538648`, and primary `0.605490`. This two-node reproduction takes about
+103 seconds on the reference Mac and stops at the requested iteration cap; it
+is not the seven-node converged breadth campaign.
 
-Inspect:
-
-```bash
-python -m json.tool /tmp/woof-bpr-run/summary.json
-python -m json.tool /tmp/woof-bpr-run/search_tree.json
-```
-
-### 5. Exercise one OpenAI-guided research node
-
-After `python agent/preflight.py --require_llm` reports `"ok": true`, run:
+### 4. Run a fresh autonomous campaign (optional and paid)
 
 ```bash
 python agent/orchestrator.py \
-  --max_iterations 3 \
-  --run_dir /tmp/woof-openai-run
-```
-
-Iterations 0 and 1 are the trusted FM and BPR nodes. Iteration 2 is the first
-OpenAI-proposed node, so this step makes a paid API request and may make
-additional retry/repair requests if the provider or generated code fails.
-Inspect `/tmp/woof-openai-run/summary.json`: `provider` should be
-`builtin+openai`, and the token counts should be nonzero.
-
-### 6. Run the full LLM-guided search
-
-```bash
-python agent/orchestrator.py \
+  --campaign \
   --max_iterations 50 \
-  --wall_clock_hours 6
+  --wall_clock_hours 6 \
+  --run_dir agent/runs/<new-run-id>
 ```
 
-This command uses `OPENAI_MODEL` from `.env`. To override it for one run:
+Later nodes use the configured OpenAI model and may incur API charges. Resume a
+campaign with the same mode:
 
 ```bash
 python agent/orchestrator.py \
-  --model '<model ID enabled for account>' \
-  --max_iterations 50 \
-  --wall_clock_hours 6
+  --campaign \
+  --resume agent/runs/<run-id>
 ```
 
-After iteration 1, the OpenAI model receives the current parent pipeline,
-complete experiment registry, search results, and bundled knowledge base. It
-proposes one focused change, debugs failures, and changes direction after
-plateaus. Once started with valid credentials, no human choice is required
-during the run. A run capped at `--max_iterations 2` never calls the API;
-later nodes require a valid OpenAI key and model.
+## Final output
 
-If the process is interrupted, resume it explicitly:
+The selected campaign run was finalized exactly once with:
 
 ```bash
-python agent/orchestrator.py --resume agent/runs/<run-id>
+python agent/orchestrator.py \
+  --campaign \
+  --resume agent/runs/improvement-campaign-20260901-02 \
+  --finalize
+
+python submit.py --check --split test \
+  agent/runs/improvement-campaign-20260901-02/submission.csv
 ```
 
-If a human changed the code/configuration between attempts, record that in the
-deliverable count:
-
-```bash
-python agent/orchestrator.py --resume agent/runs/<run-id> \
-  --manual_interventions 1
-```
-
-### 7. Inspect the converged run before finalization
-
-Each run contains:
+The checker passed for all **170,588** rows. Submission SHA-256:
 
 ```text
-agent/runs/<run-id>/
-├── run_log.jsonl          # one complete record per research node
-├── search_tree.json       # convenient tree-shaped export
-├── state.json             # durable resume state
-├── summary.json           # best validation result and resource totals
-├── best_pipeline.py       # exact validation-selected winner
-├── runtime/               # pinned candidate-visible data/evaluator modules
-├── data_views/development # no test rows or random-exposure log
-└── iterations/iter_XXXX/  # code, attempts, scores, diagnostics, logs
+03b8bc99cbc6f391ad3fd8a80bc2da2ce3cab8d4bf011fcc8c844a39b3c35de2
 ```
 
-Verify that the best iteration and its code/diff are sensible, every accepted
-score came from the trusted evaluator, and convergence/resource fields are
-present.
+Finalization executes the exact saved winner against a generated final view in
+which every test outcome is masked before candidate code runs. It produces
+scores but never computes hidden/test metrics. Do not run `submit.py --score`
+on the test split; that operation is rejected by design.
 
-### 8. Generate the final submission once
+The model artifact is reproducible source plus its fixed configuration/seed and
+data order rather than serialized NumPy weights. The generated `submission.csv`
+is ignored by Git and must be uploaded separately wherever the organizers
+request it. Sanitized finalization metadata is archived in
+[results/improvement_campaign/finalization.json](results/improvement_campaign/finalization.json).
 
-Only after the run is frozen:
+## Tools, APIs, libraries, and data
 
-```bash
-python agent/orchestrator.py \
-  --resume agent/runs/<run-id> \
-  --finalize
-```
+| Category | Used |
+|---|---|
+| Development tools | VS Code-compatible editor/Codex workspace, terminal, Python CLI, Git and GitHub; Claude Code was also used during development/debugging |
+| Runtime API | OpenAI Responses API through the `openai` Python SDK; completed campaign model: `gpt-5.6-sol` |
+| Numerical/runtime libraries | NumPy; no PyTorch, pandas, scikit-learn, RecBole, or pretrained weights |
+| Tests | Python standard-library `unittest` |
+| Training data | Organizer-provided KuaiRand-Pure standard logs and user/video files only |
+| Research context | Human-curated [knowledge pack](agent/knowledge_base.md), treated as reference material rather than training data or executable instructions |
 
-This executes the exact saved winner against the masked final feature view and
-writes `agent/runs/<run-id>/submission.csv`. It records a SHA-256 digest and
-refuses a second finalization for the same run. It does **not** calculate test
-metrics.
+No external training data or pretrained model weights are used. The
+random-exposure log is deliberately excluded from candidate development views.
+Only KuaiRand-Pure was attempted; the 1K and 27K bonus benchmarks were not.
 
-The saved research artifact is executable source, configuration, seed, and
-data order—not serialized learned weights. Finalization deterministically
-retrains that source on the training split, uses validation for early stopping,
-and then scores the masked final view. Re-running with the same data and
-environment is intended to reproduce it; NumPy/platform changes can still
-affect bit-level results. If the event requires a binary checkpoint rather than
-reproducible code plus final scores, add checkpoint serialization before the
-submission deadline.
+## Team contributions
 
-Validate the output schema/alignment:
-
-```bash
-python submit.py --check --split test \
-  agent/runs/<run-id>/submission.csv
-```
-
-Validation scoring remains available for a validation-format file:
-
-```bash
-python submit.py --make --split valid /tmp/woof-validation-fm.csv
-python submit.py --score --split valid /tmp/woof-validation-fm.csv
-```
-
-`python submit.py --score --split test ...` is deliberately rejected.
-
-## Autonomous search policy
-
-The implementation follows the bundled knowledge pack's inexpensive-first
-policy:
-
-1. Loss alignment: observed-negative BPR-style FM, then listwise/refinements.
-2. Causal user history: simple pooling before DIN/SIM-style attention.
-3. Training-only auxiliary outcomes; no same-impression outcome inputs.
-4. Censored watch-time modeling.
-5. Temporal/drift diagnostics, then capacity-heavy architectures.
-
-The harness normally branches from the validation best. Every fifth node may
-branch from a near-best underexplored node. It records all parents and tried
-ideas, asks for one change at a time, switches direction after three misses,
-and recommends pairwise combination once independent directions have produced
-wins that passed the configured promotion checks.
-
-Primary references in the bundled notes include Rendle et al. (BPR, UAI 2009),
-Zhou et al. (DIN, KDD 2018), Pi et al. (SIM, CIKM 2020), Ma et al. (ESMM,
-SIGIR 2018), Kang and McAuley (SASRec, ICDM 2018), Zhao et al. (CWM, KDD
-2024), and AIDE's tree-search framing. No live web source was needed for the
-implemented BPR operator.
-
-## Validation evidence and artifact plan
-
-The compact [hardened BPR bootstrap evidence](results/validation_bpr/README.md)
-contains sanitized metrics, two compact run-log records, and the exact executed
-code diff. It deliberately excludes raw data, per-row scores, secrets, local
-user paths, and submissions. This two-node bootstrap stopped at its requested
-iteration cap and must not be described as a converged full search.
-
-Before the final write-up, archive the eventual converged run separately with
-its hypothesis, exact diff, GAUC/nDCG@5/primary, error and recovery events,
-manual-intervention count, token usage, wall-clock, iterations, environment,
-and best-source hash. Keep large runtime directories and score arrays out of
-Git. The organizer-generated hidden-test result should be reported only after
-the one permitted evaluation; it should never be backfilled into a development
-log.
-
-## Project disclosure checklist
-
-Use this section as the source of truth for the Devpost description, then
-replace every explicit team placeholder before submission.
-
-- **Development tools:** a VS Code-compatible IDE/Codex workspace, terminal,
-  and Python CLI. GitHub is the intended delivery host, but this extracted
-  working directory is not yet initialized as a standalone repository.
-- **APIs and agents:** OpenAI Codex assisted repository development. Autonomous
-  post-bootstrap proposals and repairs use the OpenAI Responses API through
-  its Python SDK when an OpenAI key and model are supplied. The verified
-  built-in FM/BPR run made no OpenAI API calls and used zero LLM API tokens.
-- **Libraries/frameworks:** NumPy is the numerical runtime; the optional
-  OpenAI SDK is the only agent API dependency. Tests use Python's standard
-  `unittest`. The implemented path does not require pandas, scikit-learn,
-  PyTorch, RecBole, or pretrained weights.
-- **Datasets/assets:** only the organizer-provided KuaiRand-Pure standard logs
-  and user/video feature files are training inputs. The random-exposure log is
-  excluded from the development view. `agent/knowledge_base.md` is a bundled,
-  human-reviewed research reference, not training data or an instruction
-  override. No external training data or pretrained model weights are used.
-- **Team contributions — TODO:** replace the placeholders below with real names
-  and concrete work; do not submit the template as attribution.
+Work was divided between agent/model development and the research and reporting
+needed to explain and support the experiments.
 
 | Team member | Contribution |
 |---|---|
-| `<name 1>` | `<agent architecture / modeling / evaluation / write-up>` |
-| `<name 2>` | `<agent architecture / modeling / evaluation / write-up>` |
-| `<name 3, if applicable>` | `<specific contribution>` |
+| Tamanna Hasan | Co-led development of the autonomous ML agent and recommender pipeline, including implementation, model training, validation runs, and testing. |
+| Aaron Mari Santos Solis | Co-led development and model experimentation, including pipeline improvements, model training, validation analysis, and testing. |
+| Ooi Ky Shen | Co-authored the project report and researched established recommender-system methods and sources for the team knowledge base. |
+| Ranjanaa Baskaran | Co-authored the project report and contributed literature research and synthesis for the team knowledge base. |
 
-The dataset retains its own terms in `KuaiRand-Pure/LICENSE`. This repository
-currently has **no top-level project-code license**, so third-party reuse rights
-have not been granted. Choose and add an appropriate `LICENSE` before presenting
-the repository as open source; do not assume the dataset license covers this
-code.
+## Limitations and future work
 
-## Safety and scientific limitations
+- Repeated decisions on one public validation split can overfit that split.
+  Seed confirmation and convergence reduce but do not eliminate this risk.
+- The winning iteration was a built-in, development-validated operator; the
+  later LLM proposals broadened the search but did not improve it.
+- The FM/BPR comparison changes both loss and optimizer-update schedules, so it
+  is a pipeline comparison rather than a clean loss-only ablation.
+- Guarded subprocess execution is defense in depth, not a hard sandbox.
+- The current in-memory loader targets KuaiRand-Pure and does not scale directly
+  to the 1K/27K bonus datasets.
+- The project stores reproducible model source rather than serialized weights.
 
-- The AST checker and subprocess controls are defense-in-depth, not a hard
-  container or VM boundary. Candidate code is passed only the generated data
-  view, but ordinary Python file reads cannot be perfectly confined by AST
-  analysis; use a container/VM that mounts only that view for a hard boundary.
-- macOS gets environment scrubbing, an isolated working directory, and
-  process-group timeouts. Portable kernel memory limits are enabled only on
-  Linux because macOS does not reliably enforce `RLIMIT_AS` for Python/NumPy.
-- Validation feedback can still be overfit over many iterations. The paired
-  second-seed promotion check and convergence rules reduce—not eliminate—that
-  risk; neither is a statistical confirmation procedure.
-- BPR's two-seed mean improvement is encouraging but small. The final claim is
-  determined only by the organizer's one-time hidden evaluation.
-- This is a pipeline comparison, not a clean loss-only ablation: pointwise FM
-  and pairwise FM perform different numbers of optimizer steps per epoch, so
-  their effective update schedule and regularization also differ.
-- The simplified knowledge pack is a research reference, not proof that every
-  method will improve this dataset. Validation is the ground-truth check.
+Given more time, we would add nested or rolling validation to reduce adaptive
+overfitting, containerize generated-code execution, serialize model checkpoints,
+build streaming/memory-mapped bonus-dataset adapters, and revisit stronger
+causal sequence models only after establishing a useful pooled-history signal.
 
 ## Project layout
 
 | Path | Purpose |
 |---|---|
-| `data.py` | Selective split loader, five-field encoder, streaming research signals |
+| `data.py` | Split-aware loading, duration encoding, and research-signal streaming |
 | `baseline.py` | Random, popularity, and official FM baselines |
-| `evaluate.py` | Frozen GAUC/nDCG@5 implementation |
-| `submit.py` | Strict submission writer/checker; validation-only scoring |
-| `agent/orchestrator.py` | Autonomous search, execution, scoring, recovery, resume/finalization |
-| `agent/seed_pipeline.py` | Immutable iteration-0 pointwise FM |
-| `agent/bpr_pipeline.py` | Built-in observed-negative BPR-style bootstrap operator |
-| `agent/context.py` | Candidate contract and proposal policy |
-| `agent/knowledge_base.md` | Bundled reference-only research notes |
-| `agent/safety.py` | AST safety/contract tripwire |
-| `results/validation_bpr/` | Sanitized hardened bootstrap evidence and exact executed BPR diff |
+| `evaluate.py` | Frozen organizer GAUC/nDCG@5 evaluator |
+| `submit.py` | Submission writer/checker and validation-only scorer |
+| `agent/orchestrator.py` | Autonomous search, execution, evaluation, recovery, resume, and finalization |
+| `agent/bpr_pipeline.py` | Selected three-seed BPR-FM ensemble |
+| `agent/context.py` | Candidate contract and research prompt construction |
+| `agent/knowledge_base.md` | Reference-only research notes |
+| `agent/experiment_memory.md` | Durable validation-only experiment evidence |
+| `agent/experiments/` | Isolated rejected experiment implementations |
+| `agent/safety.py` | Candidate AST and output-contract checks |
+| `DEVPOST.md` | Paste-ready formatted Devpost report |
+| `results/improvement_campaign/` | Sanitized final validation evidence and logs |
 | `tests/` | Unit and integration contract tests |
-| `README.md.bak` | Preserved, Git-ignored upstream starter notes; historical reference only |
 
-The KuaiRand data retains its own license under `KuaiRand-Pure/LICENSE` and is
-ignored by Git. Check the dataset's terms before publishing or redistributing
-the CSV files. The current `README.md` governs this project; `README.md.bak` is
-kept unchanged only as an archived copy of the original starter instructions.
+## Data terms and project license
+
+KuaiRand retains its own terms in `KuaiRand-Pure/LICENSE`; review them before
+redistributing any dataset files. Raw data is not part of this repository.
+
+This repository currently has no top-level code license. Add an appropriate
+`LICENSE` before describing the project code as open source or granting reuse
+rights.

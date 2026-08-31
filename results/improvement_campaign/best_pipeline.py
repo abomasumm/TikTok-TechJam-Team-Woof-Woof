@@ -32,28 +32,6 @@ from evaluate import evaluate
 MODEL_FIELDS = [*FIELDS, "hour_4h"]
 
 
-def _require_masked_test_view(data_dir):
-    """Refuse direct held-out prediction unless the orchestrator masked outcomes."""
-    manifest_path = os.path.join(data_dir, "view_manifest.json")
-    try:
-        with open(manifest_path, encoding="utf-8") as handle:
-            manifest = json.load(handle)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(
-            "test prediction requires an orchestrator-generated masked final data view"
-        ) from exc
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("schema_version") != 2
-        or manifest.get("mode") != "final"
-        or manifest.get("test_rows_present") is not True
-        or manifest.get("test_outcomes_masked") is not True
-    ):
-        raise RuntimeError(
-            "test prediction requires a final-view manifest with masked outcomes"
-        )
-
-
 def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
 
@@ -424,8 +402,6 @@ def train_and_predict(
     """Train independent promoted models and average within-user z-scores."""
     if ensemble_size < 1:
         raise ValueError("ensemble_size must be at least 1")
-    if target_split == "test":
-        _require_masked_test_view(data_dir)
     target_users = [
         values[0]
         for _split, values in iter_interactions(

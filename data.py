@@ -116,11 +116,13 @@ def iter_interactions(data_dir, split_names=('train', 'valid'), columns=RESEARCH
 def _bucket_edges(durations, n=10):
     return np.quantile(np.asarray(durations), np.linspace(0, 1, n + 1)[1:-1])
 
-def encode(splits):
+def encode(splits, duration_buckets=10):
     """把类别特征映射成连续 id。未见过的取值统一落到该域的 UNK 槽。
     返回 (X, y, users) per split，X 为 int32 (N, len(FIELDS))，以及 field_dims。"""
     tr = splits['train']
-    edges = _bucket_edges([x[5] for x in tr])
+    if duration_buckets < 2:
+        raise ValueError('duration_buckets must be at least 2')
+    edges = _bucket_edges([x[5] for x in tr], n=duration_buckets)
 
     def raw(x):
         return [x[1], x[2], x[3], x[4], str(int(np.searchsorted(edges, x[5])))]
