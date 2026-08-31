@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "scope": "final_prediction_only",
+  "run_id": "improvement-campaign-20260901-02",
+  "best_iteration": 1,
+  "best_code_sha256": "abb9aeb9ab6fa83f46de8572f3ba9c0736e008398f956ca54aaae29fc7b0eb4a",
+  "finalized_at_utc": "2026-08-31T19:57:22.517996+00:00",
+  "finalization_wall_clock_seconds": 92.863943,
+  "submission_rows": 170588,
+  "submission_sha256": "03b8bc99cbc6f391ad3fd8a80bc2da2ce3cab8d4bf011fcc8c844a39b3c35de2",
+  "submission_schema_alignment_check": "passed",
+  "test_metrics_evaluated": false
+}

@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "scope": "validation_only",
+  "hidden_test_metrics_evaluated": false,
+  "reproduced_pointwise_fm": {
+    "GAUC": 0.6671326321610643,
+    "nDCG@5": 0.5358048805448711,
+    "primary": 0.6014687563529677
+  },
+  "starting_bpr_seed_0": {
+    "GAUC": 0.669711026116243,
+    "nDCG@5": 0.5370812958436111,
+    "primary": 0.603396160979927
+  },
+  "promoted_single_models": [
+    {"seed": 0, "GAUC": 0.6713011777345301, "nDCG@5": 0.538249920664073, "primary": 0.6047755491993015},
+    {"seed": 1, "GAUC": 0.6716427042097695, "nDCG@5": 0.5381577373755565, "primary": 0.604900220792663},
+    {"seed": 2, "GAUC": 0.6719109400829436, "nDCG@5": 0.5386345251815222, "primary": 0.6052727326322329}
+  ],
+  "promoted_ensemble": {
+    "GAUC": 0.6723332003934509,
+    "nDCG@5": 0.538647678333262,
+    "primary": 0.6054904393633564,
+    "users": 22377,
+    "rows": 124909
+  },
+  "primary_delta_vs_reproduced_fm": 0.0040216830103887435,
+  "primary_delta_vs_starting_bpr": 0.002094278383429424,
+  "primary_delta_vs_published_validation_baseline": 0.003890439363356424,
+  "trusted_harness_wall_clock_seconds": 102.8183741569519,
+  "trusted_harness_iterations": 2,
+  "trusted_harness_stop_reason": "iteration_cap",
+  "trusted_harness_llm_tokens": {"input_tokens": 0, "output_tokens": 0},
+  "autonomous_breadth_campaign": {
+    "run_id": "improvement-campaign-20260901-02",
+    "search_mode": "campaign",
+    "stop_reason": "campaign_converged",
+    "best_iteration": 1,
+    "iterations_evaluated": 7,
+    "official_convergence_iteration": 4,
+    "provider": "builtin+openai",
+    "model": "gpt-5.6-sol",
+    "failed_iterations": 0,
+    "manual_interventions": 0,
+    "recovery_events": 0,
+    "automatically_retried_api_timeouts": 6,
+    "wall_clock_seconds": 1588.1009039878845,
+    "gpu_hours": 0.0,
+    "llm_tokens": {"input_tokens": 51282, "output_tokens": 31804},
+    "best_valid_metrics": {
+      "GAUC": 0.6723332003934509,
+      "nDCG@5": 0.538647678333262,
+      "primary": 0.6054904393633564
+    },
+    "best_pipeline_sha256": "abb9aeb9ab6fa83f46de8572f3ba9c0736e008398f956ca54aaae29fc7b0eb4a",
+    "full_run_log_sha256": "5dd40ee61f9c500b84ec9949a9ef8eee678b64a174c3d23e4fe47f5fd91b0f75",
+    "environment": {
+      "python": "3.14.0",
+      "numpy": "2.5.2",
+      "platform": "macOS arm64"
+    },
+    "test_metrics_evaluated": false
+  },
+  "finalized": true,
+  "finalized_at_utc": "2026-08-31T19:57:22.517996+00:00",
+  "finalization_wall_clock_seconds": 92.863943,
+  "total_wall_clock_through_finalization_seconds": 1681.3135669231415,
+  "submission_path": "agent/runs/improvement-campaign-20260901-02/submission.csv",
+  "submission_rows": 170588,
+  "submission_sha256": "03b8bc99cbc6f391ad3fd8a80bc2da2ce3cab8d4bf011fcc8c844a39b3c35de2",
+  "submission_schema_alignment_check": "passed",
+  "test_metrics_evaluated": false
+}

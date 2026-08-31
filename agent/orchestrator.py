@@ -101,6 +101,7 @@ DIRECTION_PRIORITY = (
     "temporal/drift",
     "architecture",
 )
+MAX_FIRST_PASS_ATTEMPTS = 2
 
 MAX_SCORE_BYTES_PER_ROW = 16
 MAX_SCORE_HEADER_BYTES = 64 * 1024
@@ -737,29 +738,15 @@ def history_by_iteration(history):
 
 
 def select_parent(history, best_iteration, next_iteration, epsilon):
-    if next_iteration % 5:
-        return best_iteration
-    successful = [
-        entry
-        for entry in history
-        if entry.get("status") == "ok"
-        and entry["iteration"] != best_iteration
-        and entry.get("metrics", {}).get("valid", {}).get("primary", -1)
-        >= history_by_iteration(history)[best_iteration]["metrics"]["valid"]["primary"] - 2 * epsilon
-    ]
-    if not successful:
-        return best_iteration
-    child_counts = {
-        entry["iteration"]: sum(1 for node in history if node.get("parent_id") == entry["iteration"])
-        for entry in successful
-    }
-    successful.sort(
-        key=lambda entry: (
-            child_counts[entry["iteration"]],
-            -entry["metrics"]["valid"]["primary"],
-        )
-    )
-    return successful[0]["iteration"]
+    """Always branch from the accepted winner.
+
+    Rejected candidates remain immutable experiment evidence, but they must not
+    silently become the starting point for a later proposal.  A deliberate
+    combination is still possible because the proposer can reimplement a
+    documented component while using the winner as its explicit parent.
+    """
+    del history, next_iteration, epsilon
+    return best_iteration
 
 
 def recommend_direction(history):
@@ -770,6 +757,23 @@ def recommend_direction(history):
     }
     if len(successful_wins) >= 2:
         return "combine/two_confirmed_wins"
+    # Breadth first: get one validated result from every applicable family
+    # before spending the budget on repeated refinements of the first family.
+    for direction in DIRECTION_PRIORITY:
+        root = direction.split("/", 1)[0]
+        attempts = [
+            entry
+            for entry in history
+            if entry.get("direction", "").split("/", 1)[0] == root
+            and entry.get("iteration", 0) > 0
+        ]
+        successful = any(
+            entry.get("status") == "ok"
+            and entry.get("metrics", {}).get("valid") is not None
+            for entry in attempts
+        )
+        if not successful and len(attempts) < MAX_FIRST_PASS_ATTEMPTS:
+            return direction
     for direction in DIRECTION_PRIORITY:
         root = direction.split("/", 1)[0]
         attempts = [
@@ -844,10 +848,21 @@ def has_unexplored_priority_direction(history):
         entry.get("direction", "").split("/", 1)[0]
         for entry in history
         if entry.get("iteration", 0) > 0
+        and entry.get("status") == "ok"
+        and entry.get("metrics", {}).get("valid") is not None
     }
     return any(
         direction.split("/", 1)[0] not in attempted_roots for direction in DIRECTION_PRIORITY
     )
+
+
+def should_stop_search(history, best_curve, epsilon, rounds, search_mode):
+    """Apply the official convergence rule unless campaign mode is explicit."""
+    if not has_converged(best_curve, epsilon, rounds):
+        return False
+    if search_mode == "campaign":
+        return not has_unexplored_priority_direction(history)
+    return True
 
 
 def code_diff(parent_code, candidate_code, parent_id, iteration):
@@ -1378,6 +1393,14 @@ def parse_args(argv=None):
     parser.add_argument("--max_iterations", type=int, default=50, help="total nodes including baseline")
     parser.add_argument("--wall_clock_hours", type=float, default=6.0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--campaign",
+        action="store_true",
+        help=(
+            "development-only breadth search: continue past the official convergence "
+            "point until every priority family has one successful validation run"
+        ),
+    )
     parser.add_argument("--skip_bpr_bootstrap", action="store_true")
     parser.add_argument("--finalize", action="store_true", help="generate held-out submission once after search")
     parser.add_argument("--pipeline_timeout_minutes", type=float, default=20.0)
@@ -1407,12 +1430,19 @@ def parse_args(argv=None):
 
 
 def _run_locked(args, data_dir, run_dir, openai_config=None):
+    requested_search_mode = "campaign" if args.campaign else "official"
     if args.resume:
         state_path = run_dir / "state.json"
         if not state_path.is_file():
             raise SystemExit(f"resume state not found: {state_path}")
         with open(state_path, encoding="utf-8") as handle:
             state = json.load(handle)
+        stored_search_mode = state.get("search_mode", "official")
+        if stored_search_mode != requested_search_mode:
+            raise SystemExit(
+                "resume search mode differs from the original run; use the same "
+                "--campaign setting or start a new run"
+            )
         if state.get("data_dir") and Path(state["data_dir"]).resolve() != data_dir:
             raise SystemExit("resume data_dir differs from the original run")
         # Legacy states stored an absolute source path. Hash pinning supersedes
@@ -1481,6 +1511,8 @@ def _run_locked(args, data_dir, run_dir, openai_config=None):
             "elapsed_seconds": 0.0,
             "finalized": False,
             "bpr_bootstrap": not args.skip_bpr_bootstrap,
+            "search_mode": requested_search_mode,
+            "official_convergence_iteration": None,
             "environment": {
                 "python": sys.version,
                 "platform": platform.platform(),
@@ -1607,10 +1639,24 @@ def _run_locked(args, data_dir, run_dir, openai_config=None):
         if deadline - time.time() <= timeout_seconds + 1:
             stop_reason = "wall_clock_reserve_for_finalization"
             break
-        if has_converged(
+        official_converged = has_converged(
             state["best_curve"], state["epsilon"], state["convergence_rounds"]
-        ) and not has_unexplored_priority_direction(history):
-            stop_reason = "converged"
+        )
+        if official_converged and state.get("official_convergence_iteration") is None:
+            state["official_convergence_iteration"] = state["next_iteration"] - 1
+            state_checkpoint(state, state_path, base_elapsed, session_started)
+        if should_stop_search(
+            history,
+            state["best_curve"],
+            state["epsilon"],
+            state["convergence_rounds"],
+            state.get("search_mode", "official"),
+        ):
+            stop_reason = (
+                "campaign_converged"
+                if state.get("search_mode") == "campaign"
+                else "converged"
+            )
             break
 
         iteration = state["next_iteration"]
@@ -1862,6 +1908,8 @@ def _run_locked(args, data_dir, run_dir, openai_config=None):
         "gpu_hours": 0.0,
         "provider": state["provider"],
         "model": state["model"],
+        "search_mode": state.get("search_mode", "official"),
+        "official_convergence_iteration": state.get("official_convergence_iteration"),
         "finalized": state["finalized"],
         "submission_path": state.get("submission_path"),
         "test_metrics_evaluated": False,
